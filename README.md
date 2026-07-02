@@ -33,6 +33,19 @@ browser to configure: it just uses whatever Chrome session you already have open
 
 ## Usage
 
+**New to the command line?** The easiest path is to paste this prompt into a Claude
+Code or Claude Desktop conversation (with this repo cloned locally) and let Claude
+run it for you:
+
+> I want to archive all my Claude.ai chat history. I've cloned
+> https://github.com/nickbenes/claude-archive — please check that `browser-harness`
+> is installed (install it from https://github.com/browser-use/browser-harness if
+> not), confirm I have Chrome open and logged into claude.ai, ask me where I want the
+> archive saved, then run `archive_api.py` for me. Start with `--max 3` first to
+> make sure it works before doing the full archive.
+
+**Comfortable with a terminal?** Run it directly:
+
 ```bash
 python3 archive_api.py --output ~/claude-archive
 ```
@@ -90,6 +103,29 @@ want to archive a different Claude.ai account than the one Claude Code uses:
 2. Point `browser-harness` at that Chrome instance (see its README for how it selects
    a running Chrome)
 3. Run the script as normal — it'll pick up whatever account is in that tab
+
+## Alternative: no browser-harness install, using Claude_in_Chrome instead
+
+If you don't want to install `browser-harness` but you do have Anthropic's
+**Claude in Chrome** extension connected (its browser-automation tools include one
+that executes arbitrary JS in a page, equivalent to what this script needs),
+you can skip installing anything and instead ask Claude directly:
+
+> Using the Claude in Chrome extension, please archive my Claude.ai chats using the
+> same internal-API approach as https://github.com/nickbenes/claude-archive
+> (fetch `/api/organizations/{org_id}/chat_conversations` etc. from inside my logged-in
+> tab via the JS-execution tool) — save the output to <your chosen folder>.
+
+**Trade-off to know before choosing this path**: `archive_api.py` is a standalone
+script — once started, it runs unattended with no LLM involved per chat, which is
+why archiving 125 chats takes about 2-3 minutes. Claude_in_Chrome, by contrast, is
+only callable *by Claude, inside a live conversation* — there's no way to script it
+to run in the background. Going this route means Claude makes one tool call per
+chat, in real time, inside your conversation: noticeably slower, consumes context/
+tokens proportional to how many chats you have, and can't be kicked off and walked
+away from the way the script can. It's the right choice if you'd rather not install
+anything; the script is the right choice for a large history or if you want to
+re-run archives periodically without babysitting a conversation.
 
 ## Using this as a Claude Code skill
 
