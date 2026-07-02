@@ -15,6 +15,20 @@ API (the one the web client itself calls), so you get:
 - Every project's name, description, custom instructions, and knowledge-base files
 - Your account-level "memory" (Settings → Capabilities)
 
+## Setup prompt
+
+Paste this into Claude Code or Claude Desktop — no cloning, installing, or terminal
+commands needed on your end first:
+
+```text
+I want to archive all my Claude chat history. Please use the latest skill from
+https://github.com/nickbenes/claude-archive to do that.
+```
+
+The agent will clone this repo, install its one dependency (`browser-harness`) if
+missing, ask where you want the archive saved, and run it — see
+[install.md](install.md) for exactly what it'll do on first run.
+
 ## How it works
 
 Claude.ai puts a Cloudflare bot check in front of its API, so plain `requests`/`curl`
@@ -28,23 +42,14 @@ browser to configure: it just uses whatever Chrome session you already have open
 
 1. **Python 3.8+** (stdlib only — no pip installs needed for this script itself)
 2. **[browser-harness](https://github.com/browser-use/browser-harness)** installed and on your `$PATH`.
-   Follow that repo's README (it has an LLM-installable setup prompt).
+   Follow that repo's README (it has an LLM-installable setup prompt), or just use
+   the setup prompt above and let Claude handle it.
 3. **Chrome open and logged into claude.ai** — any tab, doesn't need to be the active one.
 
 ## Usage
 
-**New to the command line?** The easiest path is to paste this prompt into a Claude
-Code or Claude Desktop conversation (with this repo cloned locally) and let Claude
-run it for you:
-
-> I want to archive all my Claude.ai chat history. I've cloned
-> https://github.com/nickbenes/claude-archive — please check that `browser-harness`
-> is installed (install it from https://github.com/browser-use/browser-harness if
-> not), confirm I have Chrome open and logged into claude.ai, ask me where I want the
-> archive saved, then run `archive_api.py` for me. Start with `--max 3` first to
-> make sure it works before doing the full archive.
-
-**Comfortable with a terminal?** Run it directly:
+If you used the setup prompt above, you're done — Claude ran this for you. To run
+it yourself directly:
 
 ```bash
 python3 archive_api.py --output ~/claude-archive

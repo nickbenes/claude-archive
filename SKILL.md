@@ -10,18 +10,21 @@ browser extension or page-scrape), via [browser-harness](https://github.com/brow
 as the authenticated-browser bridge. See [README.md](README.md) for the full technical
 writeup — this file is the condensed skill entry point.
 
+**First time using this on a machine?** Read [install.md](install.md) instead —
+it covers cloning the repo and installing `browser-harness`. This file assumes
+that's already done.
+
 ## When to use this
 
 The user asks to back up, export, consolidate, or migrate their Claude.ai chat
 history, project knowledge bases, or saved memory.
 
-## Prerequisites (check before running)
+## Before running (quick checks, not first-time setup)
 
-1. `browser-harness` must be installed and on `$PATH`. If `which browser-harness`
-   fails, point the user to https://github.com/browser-use/browser-harness — its
-   README has an LLM-installable setup prompt.
-2. The user's Chrome must have a tab logged into claude.ai (any tab; doesn't need
-   to be focused). If archiving a *different* Claude.ai account than whatever the
+1. `which browser-harness` succeeds. If not, this is actually first-time setup —
+   go to [install.md](install.md).
+2. The user's Chrome has a tab logged into claude.ai (any tab; doesn't need to be
+   focused). If archiving a *different* Claude.ai account than whatever the
    current Claude Code session is authenticated as, that's fine — this script only
    reads the browser's session cookie, never the CLI's own credentials.
 
