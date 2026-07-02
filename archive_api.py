@@ -319,7 +319,8 @@ def archive_all(archive_root: Path, max_chats: Optional[int] = None):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Archive Claude.ai chats via internal API")
-    parser.add_argument("--output", type=Path, default=Path.home() / "gdrive" / "ObsidianVault" / "Claude-archive")
+    parser.add_argument("--output", type=Path, default=Path.home() / "claude-archive",
+                         help="Directory to write the archive to (default: ~/claude-archive)")
     parser.add_argument("--max", type=int, default=None)
     args = parser.parse_args()
     archive_all(args.output, max_chats=args.max)

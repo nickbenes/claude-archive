@@ -1,220 +1,97 @@
-# Claude.ai Chat Archive Skill
+# claude-archive
 
-Automate exporting and organizing all your Claude.ai chat history with proper timestamps and folder structure.
+Archive your entire Claude.ai chat history — every conversation, every project's
+knowledge base, and your saved memory — to local Markdown/JSON files, sorted
+chronologically.
 
-## What This Does
+Unlike browser-extension exporters, this pulls from Claude.ai's own internal JSON
+API (the one the web client itself calls), so you get:
 
-- **Discovers** all chats from your Claude.ai account
-- **Exports** each chat as markdown using the ai-chat-exporter extension
-- **Extracts** timestamps automatically
-- **Organizes** chats chronologically into folders
-- **Creates** metadata for each chat (title, date, URL)
-- **Reports** progress every 5 chats
+- Every chat, fully paginated (not just what's rendered in the sidebar)
+- Real per-message and per-chat timestamps (not scraped/guessed)
+- Clean conversation text (no sidebar/nav noise)
+- Text attachments inlined automatically (Claude already extracts their text)
+- Code-execution output files (images, generated PDFs rendered as page previews) downloaded
+- Every project's name, description, custom instructions, and knowledge-base files
+- Your account-level "memory" (Settings → Capabilities)
+
+## How it works
+
+Claude.ai puts a Cloudflare bot check in front of its API, so plain `requests`/`curl`
+calls get a 403 even with a valid session cookie. This script instead runs the exact
+same `fetch()` calls *from inside your already-logged-in Chrome tab*, using
+[browser-harness](https://github.com/browser-use/browser-harness) as the bridge — same-origin,
+real browser TLS fingerprint, no bot check triggered. No login flow, no headless
+browser to configure: it just uses whatever Chrome session you already have open.
 
 ## Prerequisites
 
-### Required
-1. **ai-chat-exporter extension**: [Install here](https://www.ai-chat-exporter.net/)
-2. **browser-harness**: Pre-installed in Claude Code
-3. **Python 3.8+**: For the automation script
-
-### Optional
-- **Playwright**: For advanced browser automation
-  ```bash
-  pip install playwright
-  playwright install chromium
-  ```
-
-## Installation
-
-```bash
-# Clone or copy the skill
-cp -r claude-archive-skill ~/.claude/skills/claude-archive/
-
-# Make scripts executable
-chmod +x ~/.claude/skills/claude-archive/*.py
-```
+1. **Python 3.8+** (stdlib only — no pip installs needed for this script itself)
+2. **[browser-harness](https://github.com/browser-use/browser-harness)** installed and on your `$PATH`.
+   Follow that repo's README (it has an LLM-installable setup prompt).
+3. **Chrome open and logged into claude.ai** — any tab, doesn't need to be the active one.
 
 ## Usage
 
-### Method 1: Direct Python Script (Recommended)
-
 ```bash
-# Basic usage - archives all chats
-python ~/gdrive/ObsidianVault/archive-automation.py
-
-# Limit to first 20 chats
-python ~/gdrive/ObsidianVault/archive-automation.py --max 20
-
-# Custom output directory
-python ~/gdrive/ObsidianVault/archive-automation.py \
-  --output ~/Downloads/my-claude-archive
+python3 archive_api.py --output ~/claude-archive
 ```
 
-### Method 2: Claude Code Integration
+Options:
+
+- `--output PATH` — where to write the archive (default: `~/claude-archive`)
+- `--max N` — only process the first N chats (useful for a quick test run)
+
+A full run of ~125 chats (with attachments/files) takes about 2-3 minutes.
+
+## Output structure
 
 ```
-/claude-archive
+claude-archive/
+├── _memory.md                          # Your Settings → Capabilities memory
+├── _projects/
+│   └── <Project Name>/
+│       ├── metadata.json               # name, description, custom instructions
+│       └── <knowledge-file>.html        # each project doc, full content
+└── 20260701_132222_Chat_title/
+    ├── conversation.md                  # full chat, real timestamps per message
+    ├── metadata.json                    # chat id, url, created/updated_at
+    ├── attachments/                     # text files you uploaded (extracted text)
+    │   └── some_file.txt
+    └── files/                           # images/previews generated during the chat
+        └── preview_0.png.webp
 ```
 
-Or use the skill directly in Claude Code for seamless integration.
+Folder names are prefixed `YYYYMMDD_HHMMSS_`, so a plain alphabetical sort of the
+archive directory is also a chronological sort. Chats with no discoverable creation
+timestamp (shouldn't normally happen) fall back to an `undated_` prefix.
 
-## Output Structure
+## Known limitations
 
-```
-Claude-archive/
-├── 20260701_094600_Third_grade_Pokemon_selection/
-│   ├── conversation.md          # Full chat export
-│   └── metadata.json            # Chat metadata
-├── 20260629_143000_Organizing_disparate_projects/
-│   ├── conversation.md
-│   └── metadata.json
-└── undated_Some_other_chat/
-    ├── conversation.md
-    └── metadata.json
-```
+- **Requires a real, logged-in browser session** — this can't run on a headless
+  server with no browser at all. It rides your existing Chrome session, so if you're
+  not logged into claude.ai in some open Chrome tab, it has nothing to authenticate with.
+- **Uses Claude.ai's internal API**, which is undocumented and could change without
+  notice. If a run starts failing across the board, that's the first thing to check.
+- **Multiple accounts**: it archives whichever account is logged into the browser tab
+  browser-harness attaches to — independent of any other Claude account/session on
+  the same machine (e.g. your Claude Code CLI login). See "Multiple accounts" below.
+- Binary (non-image) attachments beyond what Claude's own text extraction covers
+  aren't separately downloaded — only `extracted_content` text and code-execution
+  image previews are pulled today.
 
-### Folder Naming
+## Multiple accounts / different email than Claude Code
 
-- **Timestamped**: `YYYYMMDD_HHMMSS_Title` (if timestamp found in chat)
-- **Undated**: `undated_Title` (if no timestamp in content)
-- Titles are sanitized (spaces → underscores, special chars removed)
-- Chronologically sortable (older chats first)
+The script authenticates purely off the browser's session cookie — it has no idea
+what account your Claude Code CLI itself is logged in as, and doesn't need to. If you
+want to archive a different Claude.ai account than the one Claude Code uses:
 
-## Metadata Format
+1. Open (or switch to) a Chrome profile/tab logged into that account at claude.ai
+2. Point `browser-harness` at that Chrome instance (see its README for how it selects
+   a running Chrome)
+3. Run the script as normal — it'll pick up whatever account is in that tab
 
-Each chat folder contains `metadata.json`:
+## Using this as a Claude Code skill
 
-```json
-{
-  "title": "Chat title as shown in Claude.ai",
-  "chat_id": "unique-chat-uuid",
-  "url": "https://claude.ai/chat/...",
-  "exported_at": "2026-07-01T21:30:00.123456",
-  "extracted_timestamp": "2026-06-29T14:30:00",
-  "content_length": 5250
-}
-```
-
-## How It Works
-
-### Automation Flow
-
-1. **Browser Setup**: Connects to running browser or launches new instance
-2. **Chat Discovery**: Loads Claude.ai/recents and extracts all chat links
-3. **Chat Export**:
-   - Opens each chat
-   - Waits for content to load
-   - Exports via ai-chat-exporter extension
-   - Captures markdown output
-4. **Timestamp Extraction**: Finds timestamps in chat content (ISO 8601 format)
-5. **Organization**: Creates chronologically-named folders and saves metadata
-6. **Reporting**: Updates progress every 5 chats processed
-
-### Browser Extension Integration
-
-The tool works with the **ai-chat-exporter** extension by:
-- Navigating to each chat URL
-- Triggering the SELECT and EXPORT buttons via JavaScript
-- Capturing the clipboard or download output
-- Processing the markdown markdown for organization
-
-## Performance
-
-- **Speed**: ~30 seconds per chat (includes page load, export, file processing)
-- **Throughput**: ~2 chats per minute
-- **Example**: 100 chats = ~50 minutes
-
-## Troubleshooting
-
-### Extension not triggering
-- Ensure ai-chat-exporter is installed and enabled
-- Try manual export on one chat to verify it works
-- Check browser console for errors
-
-### Browser connection issues
-- Kill existing browser processes: `pkill -f chromium; pkill -f firefox`
-- Try the `--headless` flag to run browser in headless mode
-
-### Files not downloading
-- Check your Downloads folder for .md files
-- Verify browser download settings aren't blocking .md files
-- Try running with verbose logging
-
-### Timestamps not extracting
-- Add custom timestamp patterns to `extract_timestamp()` method
-- Some chats may not have timestamps (will be in 'undated' folder)
-
-## Advanced Usage
-
-### Custom Archive Rules
-
-Edit `archive-automation.py` to add custom processing:
-
-```python
-class CustomArchiver(ClaudeArchiveBot):
-    def process_chat(self, chat):
-        # Add custom logic here
-        # Filter by title, process artifacts, etc.
-        return super().process_chat(chat)
-```
-
-### Artifact Handling
-
-Future versions will include automatic artifact extraction:
-- Download PDFs, images, and other files
-- Organize in `artifacts/` subfolder
-- Link them in the markdown export
-
-### Incremental Updates
-
-```bash
-# Process only new chats
-python archive-automation.py --incremental
-
-# Resume interrupted archive
-python archive-automation.py --resume /path/to/archive
-```
-
-## Creating a Shareable Skill
-
-To turn this into a Claude Code skill:
-
-1. **Package**: Create a `.tar.gz` with all required files
-2. **Manifest**: Add skill metadata (`skill.json`)
-3. **Documentation**: Include comprehensive README (this file)
-4. **Tests**: Add example usage and validation
-5. **Share**: Submit to Claude Code skill registry
-
-See the skill contributor guide for details.
-
-## Privacy & Security
-
-- **Local Processing**: All data is processed locally on your machine
-- **No Cloud Uploads**: Archive stays in your specified directory
-- **Authentication**: Uses your existing Claude.ai session
-- **Browser Extension**: ai-chat-exporter is open source - verify before use
-
-## Contributing
-
-Found a bug or have a feature request?
-
-- Report issues with:
-  - Python version and OS
-  - Browser version
-  - ai-chat-exporter version
-  - Full error output
-
-- Contributions welcome:
-  - Better timestamp extraction
-  - Artifact handling
-  - Performance optimizations
-  - Documentation improvements
-
-## License
-
-MIT License - Use freely, modify, share, and contribute back.
-
----
-
-**Made for the Claude community** | [ai-chat-exporter](https://www.ai-chat-exporter.net/) | [Claude Code Docs](https://claude.com/code)
+See [SKILL.md](SKILL.md) for how to install this as an invocable skill
+(`/archive-claude-chats`) rather than running the script by hand.
