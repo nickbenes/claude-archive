@@ -7,6 +7,13 @@ description: Clone claude-archive, install its one dependency (browser-harness),
 
 Use once. For repeat/day-to-day use after this, read `SKILL.md`.
 
+**Only needed for `archive_api.py` (claude.ai web chats).** The other script in
+this repo, `archive_code_session.py` (Claude Code session transcripts), needs
+none of this — no `browser-harness`, no browser at all, just Python stdlib and
+the local `~/.claude/projects/` transcripts Claude Code already writes. If the
+user only wants that one, skip straight to `python3 archive_code_session.py --list`
+after cloning.
+
 ## Fast path
 
 ```bash
