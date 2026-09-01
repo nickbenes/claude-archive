@@ -217,13 +217,99 @@ def build_archive(jsonl_path: Path, archive_root: Path) -> Path:
     return folder
 
 
+DEFAULT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+
+
+def find_all_sessions(projects_root: Path) -> list:
+    """Scan every session transcript under ~/.claude/projects/*/*.jsonl.
+
+    Claude Code sanitizes the working directory into the project folder name
+    (e.g. ~/dev becomes -home-nickbenes-dev), which isn't reliably reversible,
+    so we read each session's own 'cwd' field instead of guessing from the
+    folder name.
+    """
+    sessions = []
+    for jsonl_path in sorted(projects_root.glob("*/*.jsonl")):
+        try:
+            entries = load_entries(jsonl_path)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        msg_entries = [e for e in entries if e.get('type') in ('user', 'assistant')]
+        if not msg_entries:
+            continue
+
+        timestamps = [e['timestamp'] for e in msg_entries if e.get('timestamp')]
+        started_at = min(timestamps) if timestamps else None
+        ended_at = max(timestamps) if timestamps else None
+        cwd = next((e['cwd'] for e in entries if e.get('cwd')), '?')
+
+        title = get_title(entries, fallback=None)
+        if not title:
+            for e in msg_entries:
+                if e['message'].get('role') == 'user':
+                    t = text_from_content(e['message'].get('content'))
+                    if t.strip():
+                        title = t.strip().splitlines()[0][:70]
+                        break
+
+        sessions.append({
+            "path": jsonl_path,
+            "session_id": jsonl_path.stem,
+            "title": title or "(untitled)",
+            "cwd": cwd,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "message_count": len(msg_entries),
+        })
+
+    sessions.sort(key=lambda s: s['ended_at'] or '', reverse=True)
+    return sessions
+
+
+def print_session_list(sessions: list):
+    for s in sessions:
+        when = fmt_minute(s['ended_at']) if s['ended_at'] else 'unknown'
+        print(f"{s['session_id'][:8]}  {when}  ({s['message_count']:>4} msgs)  {s['cwd']}")
+        print(f"          {s['title']}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Archive a Claude Code session transcript")
-    parser.add_argument("--session", type=Path, required=True, help="Path to the session's .jsonl transcript file")
-    parser.add_argument("--output", type=Path, required=True, help="Archive root directory to write the session folder into")
+    parser.add_argument("--session", type=Path, help="Path to a specific session's .jsonl transcript file")
+    parser.add_argument("--title", type=str, help="Find a session by a substring of its title (case-insensitive) instead of passing --session directly")
+    parser.add_argument("--list", action="store_true", help="List all discoverable sessions (optionally narrowed by --title) and exit, without archiving anything")
+    parser.add_argument("--projects-root", type=Path, default=DEFAULT_PROJECTS_ROOT, help="Override the Claude Code projects directory (default: ~/.claude/projects)")
+    parser.add_argument("--output", type=Path, help="Archive root directory to write the session folder into (required unless --list)")
     args = parser.parse_args()
 
-    folder = build_archive(args.session, args.output)
+    if args.list:
+        sessions = find_all_sessions(args.projects_root)
+        if args.title:
+            sessions = [s for s in sessions if args.title.lower() in s['title'].lower()]
+        if not sessions:
+            print("No matching sessions found.")
+            return
+        print_session_list(sessions)
+        return
+
+    session_path = args.session
+    if session_path is None:
+        if not args.title:
+            parser.error("Pass --session <path>, --title <substring>, or --list")
+        matches = [s for s in find_all_sessions(args.projects_root) if args.title.lower() in s['title'].lower()]
+        if not matches:
+            parser.error(f"No session title matched {args.title!r}. Try --list --title {args.title!r} first.")
+        if len(matches) > 1:
+            print(f"{len(matches)} sessions matched {args.title!r} — pick one with --session:")
+            print_session_list(matches)
+            raise SystemExit(1)
+        session_path = matches[0]['path']
+
+    if args.output is None:
+        parser.error("--output is required (unless using --list)")
+
+    folder = build_archive(session_path, args.output)
     print(f"Archived to: {folder}")
 
 
