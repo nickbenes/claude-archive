@@ -251,6 +251,44 @@ def archive_projects(archive_root: Path, org_id: str):
             (pfolder / name).write_text(doc.get('content') or '', encoding='utf-8')
 
 
+def save_one_chat(archive_root: Path, org_id: str, chat: Dict) -> Optional[Path]:
+    """Fetch and save a single chat, with retry-on-timeout. Returns the folder
+    written, or None if all attempts failed."""
+    title = chat['name'] or 'untitled'
+    detail = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            detail = fetch_chat_detail(org_id, chat['uuid'], timeout=120 + attempt * 60)
+            break
+        except Exception as e:
+            last_err = e
+    if detail is None:
+        print(f"  FAILED after 3 attempts: {last_err}")
+        return None
+
+    created = parse_iso(detail.get('created_at'))
+    safe_title = sanitize_name(detail.get('name') or title)
+    prefix = created.strftime('%Y%m%d_%H%M%S') if created else 'undated'
+    folder = archive_root / f"{prefix}_{safe_title}"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    (folder / "conversation.md").write_text(detail['markdown'], encoding='utf-8')
+    save_chat_files(folder, detail)
+
+    metadata = {
+        "title": detail.get('name'),
+        "chat_id": detail.get('uuid'),
+        "url": f"https://claude.ai/chat/{detail.get('uuid')}",
+        "created_at": detail.get('created_at'),
+        "updated_at": detail.get('updated_at'),
+        "attachments": [{"file_name": a.get("file_name"), "file_type": a.get("file_type")} for a in detail.get('attachments', [])],
+        "files": [{"file_name": f.get("file_name"), "kind": f.get("kind"), "downloaded": bool(f.get("content_b64"))} for f in detail.get('files', [])],
+    }
+    (folder / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+    return folder
+
+
 def archive_all(archive_root: Path, max_chats: Optional[int] = None):
     archive_root.mkdir(parents=True, exist_ok=True)
 
@@ -274,46 +312,47 @@ def archive_all(archive_root: Path, max_chats: Optional[int] = None):
 
     successful, failed = 0, 0
     for i, chat in enumerate(chats, 1):
-        title = chat['name'] or 'untitled'
-        print(f"[{i}/{len(chats)}] {title}")
-        detail = None
-        last_err = None
-        for attempt in range(3):
-            try:
-                detail = fetch_chat_detail(org_id, chat['uuid'], timeout=120 + attempt * 60)
-                break
-            except Exception as e:
-                last_err = e
-        if detail is None:
-            print(f"  FAILED after 3 attempts: {last_err}")
+        print(f"[{i}/{len(chats)}] {chat['name'] or 'untitled'}")
+        folder = save_one_chat(archive_root, org_id, chat)
+        if folder is None:
             failed += 1
-            continue
-
-        created = parse_iso(detail.get('created_at'))
-        safe_title = sanitize_name(detail.get('name') or title)
-        prefix = created.strftime('%Y%m%d_%H%M%S') if created else 'undated'
-        folder = archive_root / f"{prefix}_{safe_title}"
-        folder.mkdir(parents=True, exist_ok=True)
-
-        (folder / "conversation.md").write_text(detail['markdown'], encoding='utf-8')
-        save_chat_files(folder, detail)
-
-        metadata = {
-            "title": detail.get('name'),
-            "chat_id": detail.get('uuid'),
-            "url": f"https://claude.ai/chat/{detail.get('uuid')}",
-            "created_at": detail.get('created_at'),
-            "updated_at": detail.get('updated_at'),
-            "attachments": [{"file_name": a.get("file_name"), "file_type": a.get("file_type")} for a in detail.get('attachments', [])],
-            "files": [{"file_name": f.get("file_name"), "kind": f.get("kind"), "downloaded": bool(f.get("content_b64"))} for f in detail.get('files', [])],
-        }
-        (folder / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding='utf-8')
-
-        successful += 1
+        else:
+            successful += 1
         if i % 5 == 0:
             print(f"  -- progress: {successful} ok, {failed} failed --")
 
     print(f"\nDone. {successful} succeeded, {failed} failed. Archive at {archive_root}")
+
+
+def archive_by_title(archive_root: Path, title_substr: str) -> Path:
+    """Find a chat by a substring of its title and archive just that one."""
+    archive_root.mkdir(parents=True, exist_ok=True)
+
+    print("Fetching org id...")
+    org_id = get_org_id()
+
+    print("Fetching full paginated chat list...")
+    chats = list_all_chats(org_id)
+
+    needle = title_substr.lower()
+    matches = [c for c in chats if needle in (c.get('name') or '').lower()]
+
+    if not matches:
+        raise SystemExit(f"No chat title matched {title_substr!r} out of {len(chats)} chats. "
+                          f"Try a shorter substring, or check the exact title on claude.ai.")
+    if len(matches) > 1:
+        print(f"{len(matches)} chats matched {title_substr!r}:")
+        for m in matches:
+            print(f"  {m['uuid'][:8]}  {m.get('created_at', '?')}  {m['name']}")
+        raise SystemExit("Narrow the --title substring so exactly one chat matches.")
+
+    chat = matches[0]
+    print(f"Archiving: {chat['name']}")
+    folder = save_one_chat(archive_root, org_id, chat)
+    if folder is None:
+        raise SystemExit("Archive failed after 3 attempts — see error above.")
+    print(f"Archived to: {folder}")
+    return folder
 
 
 def main():
@@ -321,9 +360,16 @@ def main():
     parser = argparse.ArgumentParser(description="Archive Claude.ai chats via internal API")
     parser.add_argument("--output", type=Path, default=Path.home() / "claude-archive",
                          help="Directory to write the archive to (default: ~/claude-archive)")
-    parser.add_argument("--max", type=int, default=None)
+    parser.add_argument("--max", type=int, default=None, help="Only process the first N chats")
+    parser.add_argument("--title", type=str, default=None,
+                         help="Archive only the one chat whose title contains this substring "
+                              "(case-insensitive), instead of the full account")
     args = parser.parse_args()
-    archive_all(args.output, max_chats=args.max)
+
+    if args.title:
+        archive_by_title(args.output, args.title)
+    else:
+        archive_all(args.output, max_chats=args.max)
 
 
 if __name__ == "__main__":
