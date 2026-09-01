@@ -45,6 +45,29 @@ def get_title(entries, fallback: str) -> str:
     return fallback
 
 
+def resolve_title(entries, msg_entries, session_id: str) -> str:
+    """Custom title if the user set one; otherwise the first line of the first
+    user message; otherwise the session id. Shared by both the archiver and
+    --list so a session's derived name is consistent between them."""
+    title = get_title(entries, fallback=None)
+    if title:
+        return title
+    for e in msg_entries:
+        if e['message'].get('role') != 'user':
+            continue
+        content = e['message'].get('content')
+        # Only real text counts for a derived title — an image-only first
+        # message (no accompanying caption) falls through to the id instead
+        # of using the "[image attached]" placeholder as a folder name.
+        if isinstance(content, str) and content.strip():
+            return content.strip().splitlines()[0][:70]
+        if isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict) and c.get('type') == 'text' and c.get('text', '').strip():
+                    return c['text'].strip().splitlines()[0][:70]
+    return f"Claude Code session {session_id[:8]}"
+
+
 def fmt_minute(ts: Optional[str]) -> str:
     if not ts:
         return 'unknown-time'
@@ -98,7 +121,7 @@ def build_archive(jsonl_path: Path, archive_root: Path) -> Path:
     started_at = min(timestamps) if timestamps else None
     ended_at = max(timestamps) if timestamps else None
 
-    title = get_title(entries, fallback=f"Claude Code session {session_id[:8]}")
+    title = resolve_title(entries, msg_entries, session_id)
     safe_title = sanitize_name(title)
 
     if started_at:
@@ -244,19 +267,12 @@ def find_all_sessions(projects_root: Path) -> list:
         ended_at = max(timestamps) if timestamps else None
         cwd = next((e['cwd'] for e in entries if e.get('cwd')), '?')
 
-        title = get_title(entries, fallback=None)
-        if not title:
-            for e in msg_entries:
-                if e['message'].get('role') == 'user':
-                    t = text_from_content(e['message'].get('content'))
-                    if t.strip():
-                        title = t.strip().splitlines()[0][:70]
-                        break
+        title = resolve_title(entries, msg_entries, jsonl_path.stem)
 
         sessions.append({
             "path": jsonl_path,
             "session_id": jsonl_path.stem,
-            "title": title or "(untitled)",
+            "title": title,
             "cwd": cwd,
             "started_at": started_at,
             "ended_at": ended_at,
