@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""
+Archive a Claude Code session transcript to the same folder structure as the
+claude.ai archiver (archive_api.py): conversation.md, metadata.json, plus a
+thinking.md for extended-thinking/tool-call detail and an attachments/ folder
+for any embedded user-provided images.
+
+Claude Code stores each session as a JSONL transcript under
+~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl — one line per event,
+already timestamped. No browser, no API calls, no external dependency: this
+just parses that file directly.
+"""
+
+import argparse
+import base64
+import json
+import re
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
+
+def sanitize_name(name: str, max_len: int = 80) -> str:
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', name or 'untitled')
+    name = re.sub(r'\s+', '_', name.strip())
+    name = name.rstrip('._- ')
+    return name[:max_len] if name else 'untitled'
+
+
+def load_entries(jsonl_path: Path):
+    entries = []
+    with open(jsonl_path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entries.append(json.loads(line))
+    return entries
+
+
+def get_title(entries, fallback: str) -> str:
+    for e in entries:
+        if e.get('type') == 'custom-title' and e.get('customTitle'):
+            return e['customTitle']
+    return fallback
+
+
+def fmt_minute(ts: Optional[str]) -> str:
+    if not ts:
+        return 'unknown-time'
+    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+    return dt.strftime('%Y-%m-%d %H:%M')
+
+
+def text_from_content(content) -> str:
+    """Clean, human-readable text only — used for conversation.md."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            t = c.get('type')
+            if t == 'text':
+                parts.append(c.get('text', ''))
+            elif t == 'image':
+                parts.append('*[image attached — see attachments/]*')
+            # tool_use / tool_result / thinking are intentionally omitted here;
+            # they go in thinking.md instead so conversation.md stays readable.
+        return '\n\n'.join(p for p in parts if p)
+    return ''
+
+
+def tool_result_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for c in content:
+            if isinstance(c, dict) and c.get('type') == 'text':
+                parts.append(c.get('text', ''))
+            elif isinstance(c, dict) and c.get('type') == 'image':
+                parts.append('[image result]')
+        return '\n'.join(parts)
+    return str(content)
+
+
+def build_archive(jsonl_path: Path, archive_root: Path) -> Path:
+    entries = load_entries(jsonl_path)
+    session_id = jsonl_path.stem
+
+    msg_entries = [e for e in entries if e.get('type') in ('user', 'assistant')]
+    if not msg_entries:
+        raise RuntimeError("No user/assistant messages found in this session")
+
+    timestamps = [e['timestamp'] for e in msg_entries if e.get('timestamp')]
+    started_at = min(timestamps) if timestamps else None
+    ended_at = max(timestamps) if timestamps else None
+
+    title = get_title(entries, fallback=f"Claude Code session {session_id[:8]}")
+    safe_title = sanitize_name(title)
+
+    if started_at:
+        dt = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+        prefix = dt.strftime('%Y%m%d_%H%M%S')
+    else:
+        prefix = 'undated'
+
+    folder = archive_root / f"{prefix}_{safe_title}"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    convo_lines = [f"# {title}", ""]
+    if started_at:
+        convo_lines.append(f"**Started:** {started_at}")
+    if ended_at:
+        convo_lines.append(f"**Ended:** {ended_at}")
+    convo_lines.append(f"**Source:** Claude Code session `{session_id}`")
+    cwd = next((e['cwd'] for e in entries if e.get('cwd')), 'unknown')
+    convo_lines.append(f"**Working directory:** {cwd}")
+    convo_lines.append("")
+
+    think_lines = [
+        f"# Full thought process — {title}",
+        "",
+        "Extended thinking and tool calls (commands run, files read/written, their "
+        "output), in order. This mirrors what the Claude Code desktop app shows "
+        "when you expand a collapsed \"Ran N commands\" block. See conversation.md "
+        "for just the plain-language back-and-forth.",
+        "",
+    ]
+
+    image_count = 0
+    tool_use_count = 0
+    models = set()
+
+    for e in msg_entries:
+        msg = e['message']
+        role = msg.get('role')
+        label = 'User' if role == 'user' else 'Assistant'
+        ts = fmt_minute(e.get('timestamp'))
+        content = msg.get('content')
+
+        header = f"## [Context summary from earlier session] — {ts}" if e.get('isCompactSummary') else f"## {label} — {ts}"
+        convo_lines.append(header)
+        convo_lines.append("")
+        text = text_from_content(content)
+        if text.strip():
+            convo_lines.append(text)
+        convo_lines.append("")
+
+        think_lines.append(f"## {label} — {ts}")
+        think_lines.append("")
+
+        if isinstance(content, list):
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                ctype = c.get('type')
+                if ctype == 'thinking':
+                    think_lines.append("**Thinking:**")
+                    think_lines.append("")
+                    think_lines.append(c.get('thinking', ''))
+                    think_lines.append("")
+                elif ctype == 'tool_use':
+                    tool_use_count += 1
+                    think_lines.append(f"**Tool call: {c.get('name')}**")
+                    think_lines.append("```json")
+                    think_lines.append(json.dumps(c.get('input', {}), indent=2)[:4000])
+                    think_lines.append("```")
+                    think_lines.append("")
+                elif ctype == 'tool_result':
+                    result_text = tool_result_text(c.get('content'))
+                    if len(result_text) > 4000:
+                        result_text = result_text[:4000] + "\n... [truncated]"
+                    think_lines.append("**Tool result:**")
+                    think_lines.append("```")
+                    think_lines.append(result_text)
+                    think_lines.append("```")
+                    think_lines.append("")
+                elif ctype == 'image':
+                    image_count += 1
+                    src = c.get('source', {})
+                    data = src.get('data')
+                    media_type = src.get('media_type', 'image/png')
+                    ext = media_type.split('/')[-1]
+                    if data:
+                        adir = folder / "attachments"
+                        adir.mkdir(exist_ok=True)
+                        img_name = f"image_{image_count:03d}.{ext}"
+                        (adir / img_name).write_bytes(base64.b64decode(data))
+                        think_lines.append(f"*[image saved to attachments/{img_name}]*")
+                        think_lines.append("")
+                # 'text' blocks are already captured in conversation.md
+
+        think_lines.append("")
+
+        if isinstance(msg.get('model'), str):
+            models.add(msg['model'])
+
+    (folder / "conversation.md").write_text("\n".join(convo_lines), encoding='utf-8')
+    (folder / "thinking.md").write_text("\n".join(think_lines), encoding='utf-8')
+
+    metadata = {
+        "title": title,
+        "session_id": session_id,
+        "source_file": str(jsonl_path),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "message_count": len(msg_entries),
+        "tool_call_count": tool_use_count,
+        "image_attachment_count": image_count,
+        "models": sorted(models),
+    }
+    (folder / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+
+    return folder
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Archive a Claude Code session transcript")
+    parser.add_argument("--session", type=Path, required=True, help="Path to the session's .jsonl transcript file")
+    parser.add_argument("--output", type=Path, required=True, help="Archive root directory to write the session folder into")
+    args = parser.parse_args()
+
+    folder = build_archive(args.session, args.output)
+    print(f"Archived to: {folder}")
+
+
+if __name__ == "__main__":
+    main()
